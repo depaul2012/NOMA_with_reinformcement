@@ -14,9 +14,9 @@ from tabulate import tabulate
 style.use("ggplot")
 
 size = 10
-episodes = 30
-base_station_reward = 20
-base_station_penalty = (50, 100)
+episodes = 2
+base_station_reward = 30
+base_station_penalty = (50, 120)
 
 epsilon_decay = 0.9998
 
@@ -328,7 +328,7 @@ def swap(clu, users, default_settings):
     # print('CLU before\n', tabulate(pd.DataFrame(clu), headers='keys', tablefmt='psql'))
     # print(tabulate(pd.DataFrame(default_settings), headers='keys', tablefmt='psql'))
 
-    print(default_settings)
+    #print(default_settings)
     step_1 = action_user_base_station_assignment(users=users, clu=clu)
     step_2 = check_original_user_bs(us_bs=step_1, clu=clu)
     scenario = check_scenario(us_bs_s=step_2, us_bs=step_1)
@@ -336,14 +336,17 @@ def swap(clu, users, default_settings):
     #scenario 1 (users don't need swapping because they each belong to their respective base stations)
     if scenario == 1:
         scenario_1 = True
-        print('SCENARIO 1\n\n\n')
+        print('SCENARIO 1\n')
+        print(step_1)
+        print(step_2)
         final = clu
 
     #scenario 2, all users on one base station
     elif scenario == 2:
         scenario_2 = True
-        print('SCENARIO 2\n\n\n')
+        print('SCENARIO 2\n')
         print(step_1)
+        print(step_2)
         for bt in clu:
             bt_users = [i[0] for i in bt[1]]
             if all(i in bt_users for i in list(step_1.values())):
@@ -353,10 +356,9 @@ def swap(clu, users, default_settings):
                 final.append((bt[0], np.array(clu_remainder)))
                 break
 
-        print(final)
+
         for next_bt in clu:
             if next_bt[0] not in [i[0] for i in final]:
-                print(user_removed)
                 next_user = fecth_user_from_original_network(base=next_bt[0], user=user_removed, network=default_settings)
                 cluster_to_append_removed_user = list(next_bt[1])
                 cluster_to_append_removed_user.append(next_user)
@@ -373,7 +375,7 @@ def swap(clu, users, default_settings):
                 if c[0] == o:
                     clu_remainder = remove_user_from_cluster(user=p, c_cluster=c[1])
                     temp_final.append((o, np.array(clu_remainder)))
-        print(temp_final)
+
         for k,v in step_1.items():
             next_user = fecth_user_from_original_network(base=k, user=v, network=default_settings)
             for b in temp_final:
@@ -403,11 +405,14 @@ def reward_function(before_rates, after_rates):
         before_rate = n
         for o, p in after_rates.items():
             o_bs, o_user = o
-            after_rate = n
+            after_rate = p
+            print('here', o_user, m_user, before_rate, after_rate)
             if o_user == m_user and after_rate > before_rate:
                 reward += 5
             elif o_user == m_user and after_rate < before_rate:
                 reward -= 20
+            else:
+                reward += 0
     return  reward
 
 
@@ -428,8 +433,6 @@ def noma_based_training():
             c_ = np.array(clusters_in_network[c][3:,:])
         clu.append((base_stations[i], c_))
 
-    print('\n')
-    print('Initial\n',clu)
     #print(clu.shape)
     data_rates = compute_data_rate(bs=base_stations, clusters=clu, bps=base_stations_powers)
     print('\n')
@@ -443,7 +446,7 @@ def noma_based_training():
             show = True
         else:
             show = False
-
+        print('Initial\n', clu)
         episode_reward = 0
         for i in range(200):
             obs = (base_station, bs1_player), (base_station_2, bs2_player)
@@ -467,12 +470,12 @@ def noma_based_training():
                 print(bs1_associated_user, bs2_associated_user)
                 swapped_clusters = swap(clu=clu, users=(str(bs1_associated_user), str(bs2_associated_user)), default_settings=clusters_in_network)
                 computed_noma_rates = compute_data_rate(bs=base_stations, clusters=swapped_clusters, bps=base_stations_powers)
-                print('Finally S')
-                print(swapped_clusters)
+                print('Swapped\n', swapped_clusters)
                 pprint(computed_noma_rates)
 
                 reward = reward_function(before_rates=data_rates, after_rates=computed_noma_rates)
-
+                print('\n\nReward\n\n', reward)
+                data_rates = computed_noma_rates
                 ## NOW WE KNOW THE REWARD, LET'S CALC YO
                 # first we need to obs immediately after the move.
                 new_obs = (base_station, bs1_player), (base_station_2, bs2_player)
