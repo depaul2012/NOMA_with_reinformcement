@@ -11,36 +11,22 @@ from itertools import combinations, permutations
 import pandas as pd
 from matplotlib import style
 from tabulate import tabulate
+import argparse
 style.use("ggplot")
 
-size = 10
-episodes = 2
-base_station_reward = 30
-base_station_penalty = (50, 120)
-
-epsilon_decay = 0.9998
-
-show_every = 2500
-
-start_q_table = None
-learning_rate = 0.1
-discount = 0.95
-
-base_station = (5, 5)
-base_station_2 = (-5,-5)
-user_locations = [(1, 1), (1, 3), (3, 2), (-4, -1), (-2, -4), (-1, -2)]
-
 class base_station_controller(object):
-    def __init__(self):
-        self.x, self.y = random.choice(user_locations)
+    def __init__(self, args):
+        self.x, self.y = random.choice(args.user_locations)
+        self.user_locations = args.user_locations
+        self.size = args.size
 
     def __str__(self):
         return f"{self.x}, {self.y}"
 
     def network_params(self):
         agent_move = (self.x, self.y)
-        if agent_move not in user_locations:
-            agent_move = random.choice(user_locations)
+        if agent_move not in self.user_locations:
+            agent_move = random.choice(self.user_locations)
         return agent_move
 
     def action(self, choice):
@@ -63,68 +49,68 @@ class base_station_controller(object):
     def move(self, x=False, y=False):
         # If no value for x, move randomly
         if not x:
-            self.x = random.choice([i[0] for i in user_locations])
+            self.x = random.choice([i[0] for i in self.user_locations])
         else:
             self.x = x
 
         # If no value for y, move randomly
         if not y:
-            self.y = random.choice([i[1] for i in user_locations])
+            self.y = random.choice([i[1] for i in self.user_locations])
         else:
             self.y = y
 
         # If we base stations is trying to serve a user out of bounds
         if self.x < -10:
             self.x = -10
-        elif self.x > size + 1:
-            self.x = size - 1
+        elif self.x > self.size + 1:
+            self.x = self.size - 1
         if self.y < -10:
             self.y = -10
-        elif self.y > size + 1:
-            self.y = size - 1
+        elif self.y > self.size + 1:
+            self.y = self.size - 1
 
         agent_move = (self.x, self.y)
-        if agent_move not in user_locations:
-            agent_move = random.choice(user_locations)
+        if agent_move not in self.user_locations:
+            agent_move = random.choice(self.user_locations)
             self.x, self.y = agent_move
         else:
             self.x = self.x
             self.y = self.y
 
 
-def initialize_q_table():
-    if start_q_table is None:
+def initialize_q_table(args):
+    if args.start_q_table is None:
         # initialize the q-table#
         q_table = {}
-        for o in permutations(user_locations, 2):  # 5 implying 5 users
+        for o in permutations(args.user_locations, 2):  # 5 implying 5 users
             u, v = o
-            print((base_station, u, base_station_2, v))
-            q_table[(base_station, u, base_station_2, v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
+            print((args.base_station, u, args.base_station_2, v))
+            q_table[(args.base_station, u, args.base_station_2, v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
         #pprint('Initial Q-table keys\n {}'.format(q_table.keys()))
     else:
-        with open(start_q_table, "rb") as f:
+        with open(args.start_q_table, "rb") as f:
             q_table = pickle.load(f)
     return q_table
 
-def radius_based_training():
+def radius_based_training(args):
     epsilon = 0.9
     episode_rewards = []
-    q_table = initialize_q_table()
-    bs1_users = [(x,y) for x,y in user_locations if x>0 and y>0]
-    bs2_users = [i for i in user_locations if i not in bs1_users]
-    for episode in range(episodes):
+    q_table = initialize_q_table(args)
+    bs1_users = [(x,y) for x,y in args.user_locations if x>0 and y>0]
+    bs2_users = [i for i in args.user_locations if i not in bs1_users]
+    for episode in range(args.episodes):
         bs1_player = base_station_controller()
         bs2_player = base_station_controller()
-        if episode % show_every == 0:
+        if episode % args.show_every == 0:
             #print(f"on #{episode}, epsilon is {epsilon}")
-            print(f"{show_every} ep mean: {np.mean(episode_rewards[-show_every:])}")
+            print(f"{args.show_every} ep mean: {np.mean(episode_rewards[-args.show_every:])}")
             show = True
         else:
             show = False
 
         episode_reward = 0
         for i in range(200):
-            obs = (base_station, bs1_player), (base_station_2, bs2_player)
+            obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
             print('OBS {}'.format(i), obs[0], obs[1])
             if np.random.random() > epsilon:
                 # GET THE ACTION
@@ -144,13 +130,13 @@ def radius_based_training():
                 bs2_associated_user = (bs2_player.x, bs2_player.y)
 
                 if bs1_associated_user in bs2_users or bs2_associated_user in bs1_users:
-                    reward = -(base_station_penalty[1])
+                    reward = -(args.base_station_penalty[1])
                 elif bs1_associated_user in bs1_users and bs2_associated_user in bs2_users:
-                    reward = base_station_reward
+                    reward = args.base_station_reward
 
                 ## NOW WE KNOW THE REWARD, LET'S CALC YO
                 # first we need to obs immediately after the move.
-                new_obs = (base_station, bs1_player), (base_station_2, bs2_player)
+                new_obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
 
                 print('New OBS', new_obs[0][0], new_obs[0][1].x, new_obs[0][1].y, new_obs[1][0], new_obs[1][1].x, new_obs[1][1].y)
 
@@ -159,26 +145,26 @@ def radius_based_training():
                 current_q = [q[0][actions[0]],q[1][actions[1]]]
 
                 new_q = []
-                if reward == base_station_reward:
-                    new_q = [base_station_reward/2 for _ in [base_station, base_station_2]]
+                if reward == args.base_station_reward:
+                    new_q = [args.base_station_reward/2 for _ in [args.base_station, args.base_station_2]]
                 else:
-                    new_q = [(1 - learning_rate) * current_q[i] + learning_rate * (reward + discount * max_future_q[i]) for i in range(2)]
+                    new_q = [(1 - args.learning_rate) * current_q[i] + args.learning_rate * (reward + args.discount * max_future_q[i]) for i in range(2)]
 
                 for i in range(2):
                     q_table[((obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y)))][i][actions[i]] = new_q[i]
 
                 episode_reward += reward
-                if reward == base_station_reward or reward == -base_station_penalty[1]:
+                if reward == args.base_station_reward or reward == -args.base_station_penalty[1]:
                     break
 
         # print(episode_reward)
         episode_rewards.append(episode_reward)
-        epsilon *= epsilon_decay
+        epsilon *= args.epsilon_decay
 
-    moving_avg = np.convolve(episode_rewards, np.ones((show_every,)) / show_every, mode='valid')
+    moving_avg = np.convolve(episode_rewards, np.ones((args.show_every,)) / args.show_every, mode='valid')
 
     plt.plot([i for i in range(len(moving_avg))], moving_avg)
-    plt.ylabel(f"Reward {show_every}ma")
+    plt.ylabel(f"Reward {args.show_every}ma")
     plt.xlabel("episode #")
     plt.show()
 
@@ -237,10 +223,10 @@ def total_transmitted_superposed_signal(users, current_user, sic=False):
             P += j[3]
     return P
 
-def initialize_built_network(bs):
+def initialize_built_network(args, bs):
     clusters = {}
     for i, j in enumerate(bs):
-        cluster = building_network_parameters(user_locations, j)
+        cluster = building_network_parameters(args.user_locations, j)
         clusters[j] = cluster.values
         print('Base station', i + 1, j)
         print(tabulate(cluster, headers='keys', tablefmt='psql'))
@@ -416,13 +402,13 @@ def reward_function(before_rates, after_rates):
     return  reward
 
 
-def noma_based_training():
+def noma_based_training(args):
     epsilon = 0.9
     episode_rewards = []
-    q_table = initialize_q_table()
-    base_stations = [base_station, base_station_2]
+    q_table = initialize_q_table(args)
+    base_stations = [args.base_station, args.base_station_2]
     base_stations_powers = [100, 120]
-    clusters_in_network = initialize_built_network(bs=base_stations)
+    clusters_in_network = initialize_built_network(args, bs=base_stations)
     #print(clusters_in_network)
 
     clu = []
@@ -437,19 +423,19 @@ def noma_based_training():
     data_rates = compute_data_rate(bs=base_stations, clusters=clu, bps=base_stations_powers)
     print('\n')
     pprint(data_rates)
-    for episode in range(episodes):
-        bs1_player = base_station_controller()
-        bs2_player = base_station_controller()
-        if episode % show_every == 0:
+    for episode in range(args.episodes):
+        bs1_player = base_station_controller(args)
+        bs2_player = base_station_controller(args)
+        if episode % args.show_every == 0:
             #print(f"on #{episode}, epsilon is {epsilon}")
-            print(f"{show_every} ep mean: {np.mean(episode_rewards[-show_every:])}")
+            print(f"{args.show_every} ep mean: {np.mean(episode_rewards[-args.show_every:])}")
             show = True
         else:
             show = False
         print('Initial\n', clu)
         episode_reward = 0
         for i in range(200):
-            obs = (base_station, bs1_player), (base_station_2, bs2_player)
+            obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
             print('OBS {}'.format(i), obs[0], obs[1])
             if np.random.random() > epsilon:
                 # GET THE ACTION
@@ -478,7 +464,7 @@ def noma_based_training():
                 data_rates = computed_noma_rates
                 ## NOW WE KNOW THE REWARD, LET'S CALC YO
                 # first we need to obs immediately after the move.
-                new_obs = (base_station, bs1_player), (base_station_2, bs2_player)
+                new_obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
 
                 print('New OBS', new_obs[0][0], new_obs[0][1].x, new_obs[0][1].y, new_obs[1][0], new_obs[1][1].x, new_obs[1][1].y)
 
@@ -487,26 +473,26 @@ def noma_based_training():
                 current_q = [q[0][actions[0]],q[1][actions[1]]]
 
                 new_q = []
-                if reward == base_station_reward:
-                    new_q = [base_station_reward/2 for _ in [base_station, base_station_2]]
+                if reward == args.base_station_reward:
+                    new_q = [args.base_station_reward/2 for _ in [args.base_station, args.base_station_2]]
                 else:
-                    new_q = [(1 - learning_rate) * current_q[i] + learning_rate * (reward + discount * max_future_q[i]) for i in range(2)]
+                    new_q = [(1 - args.learning_rate) * current_q[i] + args.learning_rate * (reward + args.discount * max_future_q[i]) for i in range(2)]
 
                 for i in range(2):
                     q_table[((obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y)))][i][actions[i]] = new_q[i]
 
                 episode_reward += reward
-                if reward == base_station_reward or reward == -base_station_penalty[1]:
+                if reward == args.base_station_reward or reward == -args.base_station_penalty[1]:
                     break
 
         # print(episode_reward)
         episode_rewards.append(episode_reward)
-        epsilon *= epsilon_decay
+        epsilon *= args.epsilon_decay
 
-    moving_avg = np.convolve(episode_rewards, np.ones((show_every,)) / show_every, mode='valid')
+    moving_avg = np.convolve(episode_rewards, np.ones((args.show_every,)) / args.show_every, mode='valid')
 
     plt.plot([i for i in range(len(moving_avg))], moving_avg)
-    plt.ylabel(f"Reward {show_every}ma")
+    plt.ylabel(f"Reward {args.show_every}ma")
     plt.xlabel("episode #")
     plt.show()
 
@@ -514,5 +500,22 @@ def noma_based_training():
         pickle.dump(q_table, f)
 
 if __name__=='__main__':
-    #print(initialize_q_table())
-    noma_based_training()
+    par = argparse.ArgumentParser()
+    par.add_argument("--noma", action="store_true", help="Used when you want to use noma-based rewarding")
+    par.add_argument("--radius", action="store_true", help="Used when you want to use radius-based rewarding")
+    par.add_argument("--size", default=10, type=int, help="max south, north, east and west length of environment")
+    par.add_argument("--episodes", default=2, type=int, help="default number of episodes for training")
+    par.add_argument("--base_station_reward", default=30, type=int, help="max reward for the agent")
+    par.add_argument("--base_station_penalty", default=[50, 120], type=list, help="ordered per base station")
+    par.add_argument("--epsilon_decay", default=0.9998, type=float, help="learning rate")
+    par.add_argument("--learning_rate", default=0.1, type=float, help="learning rate e.g. 0.5, 0.2, 0.1")
+    par.add_argument("--discount", default=0.95, type=float)
+    par.add_argument("--show_every", default=2500, type=int, help="print status of training every aftter")
+    par.add_argument("--downlink", action="store_true", required=True, help="inform the agent, it's a downlink scenario")
+    par.add_argument("--base_station", default=(5,5), type=int, help="base station location in the environment")
+    par.add_argument("--base_station_2", default=(-5,-5), type=int, help="base station location in the environment")
+    par.add_argument("--start_q_table", default=None, type=bool, help="Existing or non-existent q table")
+    par.add_argument("--user_locations", default=[(1, 1), (1, 3), (3, 2), (-4, -1), (-2, -4), (-1, -2)])
+    args = par.parse_args()
+
+    noma_based_training(args)
