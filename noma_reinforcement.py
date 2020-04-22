@@ -82,10 +82,10 @@ def initialize_q_table(args):
     if args.start_q_table is None:
         # initialize the q-table#
         q_table = {}
-        for o in permutations(args.user_locations, 2):  # 5 implying 5 users
-            u, v = o
-            print((args.base_station, u, args.base_station_2, v))
-            q_table[(args.base_station, u, args.base_station_2, v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
+        for o in permutations(args.user_locations, 6):  # 5 implying 5 users
+            u, v = o[:3], o[3:]
+            #print((args.base_station, u, args.base_station_2, v))
+            q_table[((args.base_station), u), ((args.base_station_2), v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
         #pprint('Initial Q-table keys\n {}'.format(q_table.keys()))
     else:
         with open(args.start_q_table, "rb") as f:
@@ -99,8 +99,9 @@ def radius_based_training(args):
     bs1_users = [(x,y) for x,y in args.user_locations if x>0 and y>0]
     bs2_users = [i for i in args.user_locations if i not in bs1_users]
     for episode in range(args.episodes):
-        bs1_player = base_station_controller()
-        bs2_player = base_station_controller()
+        bs1_player = base_station_controller(args)
+        bs2_player = base_station_controller(args)
+
         if episode % args.show_every == 0:
             #print(f"on #{episode}, epsilon is {epsilon}")
             print(f"{args.show_every} ep mean: {np.mean(episode_rewards[-args.show_every:])}")
@@ -184,9 +185,9 @@ def building_network_parameters(users, base_station):
     average_h = np.mean(h.tolist())
     p = []
     for i in h:
-        i_p = np.random.randint(10)
+        i_p = np.random.randint(1, 10)
         if i < average_h:
-            i_p = i * i_p
+            i_p = i + i_p
         p.append(float(i_p))
 
     dataset = pd.DataFrame()
@@ -202,18 +203,18 @@ def euclidean_distance(user, base_station):
     x_b, y_b = base_station
     return np.sqrt((x_u-x_b)**2 + (y_u-y_b)**2)
 
-def cluster_level_interference(users, bp, current_user):
+def intra_level_interference(users, current_user):
     I = 0
     for i,u in enumerate(users):
-        if u[0] != current_user:
-            I += ((u[2]*np.sqrt(u[3]*bp)) + u[-2])
+        if u[0] != current_user: #signal to user can't be interference
+            I += (1 * u[3] * np.square(np.abs(u[2])))
     return I
 
 def basestation_level_interference(clusters, bp, index_cluster):
     I = 0
     for i,u in enumerate(clusters):
         if i != index_cluster:
-            I += cluster_level_interference(u, bp, current_user=None)
+            I += intra_level_interference(u, bp, current_user=None)
     return I
 
 def total_transmitted_superposed_signal(users, current_user, sic=False):
@@ -228,7 +229,7 @@ def initialize_built_network(args, bs):
     for i, j in enumerate(bs):
         cluster = building_network_parameters(args.user_locations, j)
         clusters[j] = cluster.values
-        print('Base station', i + 1, j)
+        #print('Base station', i + 1, j)
         print(tabulate(cluster, headers='keys', tablefmt='psql'))
     return clusters
 
@@ -243,33 +244,25 @@ def decoding_order(users, i_c, i_b, snr, power):
 
 def compute_data_rate(bs, clusters, bps, sic=False):
     data_rates = {}
-    clusters = [i[1] for i in clusters]
-    for i, curr_cluster in enumerate(clusters):
-        for k, user in enumerate(curr_cluster):
-            channel_gain = abs(user[2]) ** 2  # numerator
-            power_coeffient = user[3]
-            distance = user[1]
-            # numerator
-            numerator = channel_gain * distance * power_coeffient
+    for curr_cluster in clusters:
+        curr_bs = curr_cluster[0]
+        for clu in curr_cluster[1]:
+            channel_gain, power_coeffient, distance = clu[2], clu[3], clu[1]  # numerator
+            # SINR equation numerator
+            numerator = 1 * power_coeffient * np.square(np.abs(channel_gain)) #1 signifies the use-bs indicator
             '----------------------------------------------------------------------------------------'
-            transmitted_superposed_signal = total_transmitted_superposed_signal(users=curr_cluster,
-                                                                                current_user=user[0],
-                                                                                sic=sic)
+            intra_interference = intra_level_interference(users=curr_cluster[1], current_user=clu[0])
 
-            cluster_interference = cluster_level_interference(users=curr_cluster,
-                                                              bp=bps[i],
-                                                              current_user=user[0])
+            inter_interference = 0
+            for l in clusters:
+                if l[0] != curr_bs:
+                    inter_interference += intra_level_interference(users=l[1], current_user=clu[0])
 
-            baselevel_interference = basestation_level_interference(clusters=clusters,
-                                                                    bp=bps[i],
-                                                                    index_cluster=i)
-
-            snr = bps[i] / user[-1]
-            # denominator
-            denominator = (channel_gain * transmitted_superposed_signal) + cluster_interference + baselevel_interference + snr
+            # SINR equation denominator
+            denominator = intra_interference + inter_interference + clu[4]**2
             '----------------------------------------------------------------------------------------'
             user_r = np.log2(1 + (numerator / denominator))
-            data_rates[(bs[i], user[0])] = user_r
+            data_rates[(curr_bs, clu[0])] = user_r
            # print('User {} has data rate {}'.format(user[0], user_r))
     return data_rates
 
@@ -392,11 +385,11 @@ def reward_function(before_rates, after_rates):
         for o, p in after_rates.items():
             o_bs, o_user = o
             after_rate = p
-            print('here', o_user, m_user, before_rate, after_rate)
+            #print('here', o_user, m_user, before_rate, after_rate)
             if o_user == m_user and after_rate > before_rate:
                 reward += 5
             elif o_user == m_user and after_rate < before_rate:
-                reward -= 20
+                reward -= 5
             else:
                 reward += 0
     return  reward
@@ -409,7 +402,6 @@ def noma_based_training(args):
     base_stations = [args.base_station, args.base_station_2]
     base_stations_powers = [100, 120]
     clusters_in_network = initialize_built_network(args, bs=base_stations)
-    #print(clusters_in_network)
 
     clu = []
     for i,c in enumerate(clusters_in_network):
@@ -419,10 +411,10 @@ def noma_based_training(args):
             c_ = np.array(clusters_in_network[c][3:,:])
         clu.append((base_stations[i], c_))
 
-    #print(clu.shape)
+    #print(clu)
     data_rates = compute_data_rate(bs=base_stations, clusters=clu, bps=base_stations_powers)
     print('\n')
-    pprint(data_rates)
+    #pprint(data_rates)
     for episode in range(args.episodes):
         bs1_player = base_station_controller(args)
         bs2_player = base_station_controller(args)
@@ -432,15 +424,13 @@ def noma_based_training(args):
             show = True
         else:
             show = False
-        print('Initial\n', clu)
+        #print('Initial\n', clu)
         episode_reward = 0
         for i in range(200):
             obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
             print('OBS {}'.format(i), obs[0], obs[1])
             if np.random.random() > epsilon:
-                # GET THE ACTION
-                #actions = [np.argmax(i) for i in q_table[(obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y))]]
-                print(obs[0][0], obs[0][1].x, obs[0][1].y, obs[1][0], obs[1][1].x, obs[1][1].y)
+                # GET THE ACTION, but make sure the
                 if (obs[0][1].x + obs[0][1].y) != (obs[1][1].x + obs[1][1].y):
                     actions = [np.argmax(i) for i in  q_table[(obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y))]]
             else:
@@ -454,13 +444,14 @@ def noma_based_training(args):
                 bs1_associated_user = (bs1_player.x, bs1_player.y)
                 bs2_associated_user = (bs2_player.x, bs2_player.y)
                 print(bs1_associated_user, bs2_associated_user)
+
                 swapped_clusters = swap(clu=clu, users=(str(bs1_associated_user), str(bs2_associated_user)), default_settings=clusters_in_network)
                 computed_noma_rates = compute_data_rate(bs=base_stations, clusters=swapped_clusters, bps=base_stations_powers)
                 print('Swapped\n', swapped_clusters)
                 pprint(computed_noma_rates)
 
                 reward = reward_function(before_rates=data_rates, after_rates=computed_noma_rates)
-                print('\n\nReward\n\n', reward)
+                print('Reward\n', reward)
                 data_rates = computed_noma_rates
                 ## NOW WE KNOW THE REWARD, LET'S CALC YO
                 # first we need to obs immediately after the move.
@@ -473,31 +464,31 @@ def noma_based_training(args):
                 current_q = [q[0][actions[0]],q[1][actions[1]]]
 
                 new_q = []
-                if reward == args.base_station_reward:
-                    new_q = [args.base_station_reward/2 for _ in [args.base_station, args.base_station_2]]
-                else:
-                    new_q = [(1 - args.learning_rate) * current_q[i] + args.learning_rate * (reward + args.discount * max_future_q[i]) for i in range(2)]
-
-                for i in range(2):
-                    q_table[((obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y)))][i][actions[i]] = new_q[i]
-
-                episode_reward += reward
-                if reward == args.base_station_reward or reward == -args.base_station_penalty[1]:
-                    break
-
-        # print(episode_reward)
-        episode_rewards.append(episode_reward)
-        epsilon *= args.epsilon_decay
-
-    moving_avg = np.convolve(episode_rewards, np.ones((args.show_every,)) / args.show_every, mode='valid')
-
-    plt.plot([i for i in range(len(moving_avg))], moving_avg)
-    plt.ylabel(f"Reward {args.show_every}ma")
-    plt.xlabel("episode #")
-    plt.show()
-
-    with open(f"wireless_communication_qtable-{int(time.time())}.pickle", "wb") as f:
-        pickle.dump(q_table, f)
+    #             if reward == args.base_station_reward:
+    #                 new_q = [args.base_station_reward/2 for _ in [args.base_station, args.base_station_2]]
+    #             else:
+    #                 new_q = [(1 - args.learning_rate) * current_q[i] + args.learning_rate * (reward + args.discount * max_future_q[i]) for i in range(2)]
+    #
+    #             for i in range(2):
+    #                 q_table[((obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y)))][i][actions[i]] = new_q[i]
+    #
+    #             episode_reward += reward
+    #             if reward == args.base_station_reward or reward == -args.base_station_penalty[1]:
+    #                 break
+    #
+    #     # print(episode_reward)
+    #     episode_rewards.append(episode_reward)
+    #     epsilon *= args.epsilon_decay
+    #
+    # moving_avg = np.convolve(episode_rewards, np.ones((args.show_every,)) / args.show_every, mode='valid')
+    #
+    # plt.plot([i for i in range(len(moving_avg))], moving_avg)
+    # plt.ylabel(f"Reward {args.show_every}ma")
+    # plt.xlabel("episode #")
+    # plt.show()
+    #
+    # with open(f"wireless_communication_qtable-{int(time.time())}.pickle", "wb") as f:
+    #     pickle.dump(q_table, f)
 
 if __name__=='__main__':
     par = argparse.ArgumentParser()
@@ -512,10 +503,14 @@ if __name__=='__main__':
     par.add_argument("--discount", default=0.95, type=float)
     par.add_argument("--show_every", default=2500, type=int, help="print status of training every aftter")
     par.add_argument("--downlink", action="store_true", required=True, help="inform the agent, it's a downlink scenario")
-    par.add_argument("--base_station", default=(5,5), type=int, help="base station location in the environment")
+    par.add_argument("--learner_basis", type=str, required=True, help="Is it based on the radius or noma")
+    par.add_argument("--base_station", default=(5, 5), type=int, help="base station location in the environment")
     par.add_argument("--base_station_2", default=(-5,-5), type=int, help="base station location in the environment")
     par.add_argument("--start_q_table", default=None, type=bool, help="Existing or non-existent q table")
     par.add_argument("--user_locations", default=[(1, 1), (1, 3), (3, 2), (-4, -1), (-2, -4), (-1, -2)])
     args = par.parse_args()
 
-    noma_based_training(args)
+    if args.learner_basis.lower() == 'noma':
+        noma_based_training(args)
+    elif args.learner_basis.lower() == 'radius':
+        radius_based_training(args)
