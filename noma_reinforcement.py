@@ -82,15 +82,40 @@ def initialize_q_table(args):
     if args.start_q_table is None:
         # initialize the q-table#
         q_table = {}
-        for o in permutations(args.user_locations, 6):  # 5 implying 5 users
+        for j, o in enumerate(permutations(args.user_locations, 6)):  # 6 implying users
             u, v = o[:3], o[3:]
-            #print((args.base_station, u, args.base_station_2, v))
-            q_table[((args.base_station), u), ((args.base_station_2), v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
-        #pprint('Initial Q-table keys\n {}'.format(q_table.keys()))
+            if j % 6 == 0:
+                q_table[((args.base_station), u), ((args.base_station_2), v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
+        '''
+        Extending the q_table with other combinations such as base_1 connected to 4 users and base_2 connected to 2 users and vice versa
+        '''
+        for i in [4,2]:
+            q_table = q_table_extension(i, args, q_table)
+
     else:
         with open(args.start_q_table, "rb") as f:
             q_table = pickle.load(f)
     return q_table
+
+def q_table_extension(x, args, q_table):
+    f = []
+    for j, o in enumerate(permutations(args.user_locations, 6)):  # 6 implying users
+        u, v = o[:x], o[x:]
+        v = tuple(sorted(list(v)))
+        if v not in f:
+            q_table[((args.base_station), u), ((args.base_station_2), v)] = [[np.random.uniform(-6, 0) for i in range(6)] for i in range(2)]
+    return q_table
+
+def search_q_table(agent_move, q_table):
+    agent_move = ((agent_move[:2]), (agent_move[2:]))
+    agent_move_b1, agent_move_b2 = agent_move
+    print(agent_move)
+    for k in q_table.keys():
+        b1,b2 = k
+        if agent_move_b1[0] == b1[0] and agent_move_b1[1] in b1[1]:
+            if agent_move_b2[0] == b2[0] and agent_move_b2[1] in b2[1]:
+                q_key = k
+    return q_key
 
 def radius_based_training(args):
     epsilon = 0.9
@@ -398,6 +423,7 @@ def reward_function(before_rates, after_rates):
 def noma_based_training(args):
     epsilon = 0.9
     episode_rewards = []
+    swapped_clusters = []
     q_table = initialize_q_table(args)
     base_stations = [args.base_station, args.base_station_2]
     base_stations_powers = [100, 120]
@@ -411,10 +437,11 @@ def noma_based_training(args):
             c_ = np.array(clusters_in_network[c][3:,:])
         clu.append((base_stations[i], c_))
 
-    #print(clu)
+    print(clu)
     data_rates = compute_data_rate(bs=base_stations, clusters=clu, bps=base_stations_powers)
     print('\n')
     #pprint(data_rates)
+    #q_table_key = None
     for episode in range(args.episodes):
         bs1_player = base_station_controller(args)
         bs2_player = base_station_controller(args)
@@ -426,78 +453,84 @@ def noma_based_training(args):
             show = False
         #print('Initial\n', clu)
         episode_reward = 0
+
         for i in range(200):
             obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
-            print('OBS {}'.format(i), obs[0], obs[1])
-            if np.random.random() > epsilon:
-                # GET THE ACTION, but make sure the
-                if (obs[0][1].x + obs[0][1].y) != (obs[1][1].x + obs[1][1].y):
-                    actions = [np.argmax(i) for i in  q_table[(obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y))]]
-            else:
-                actions = [np.random.randint(0, 5) for i in range(2)]
-            print('action taken', actions)
-            # Take the action!
-            if actions[0] != actions[1]:
-                bs1_player.action(actions[0])
-                bs2_player.action(actions[1])
-                # the logic
-                bs1_associated_user = (bs1_player.x, bs1_player.y)
-                bs2_associated_user = (bs2_player.x, bs2_player.y)
-                print(bs1_associated_user, bs2_associated_user)
+            agent_move = (obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y))
+            print(agent_move)
+            if (obs[0][1].x + obs[0][1].y) != (obs[1][1].x + obs[1][1].y):
+                q_table_key = search_q_table(agent_move=agent_move, q_table=q_table)
+                if np.random.random() > epsilon:
+                    # GET THE ACTION, but make sure the
+                    print('Q_table \t\t', q_table_key)
+                    actions = [np.argmax(i) for i in  q_table[q_table_key]]
+                else:
+                    actions = [np.random.randint(0, 5) for i in range(2)]
 
-                swapped_clusters = swap(clu=clu, users=(str(bs1_associated_user), str(bs2_associated_user)), default_settings=clusters_in_network)
-                computed_noma_rates = compute_data_rate(bs=base_stations, clusters=swapped_clusters, bps=base_stations_powers)
-                print('Swapped\n', swapped_clusters)
-                pprint(computed_noma_rates)
+                print('action taken', actions)
+                # Take the action!
+                if actions[0] != actions[1]:
+                    bs1_player.action(actions[0])
+                    bs2_player.action(actions[1])
+                    # the logic
+                    bs1_associated_user = (bs1_player.x, bs1_player.y)
+                    bs2_associated_user = (bs2_player.x, bs2_player.y)
+                    print(bs1_associated_user, bs2_associated_user)
 
-                reward = reward_function(before_rates=data_rates, after_rates=computed_noma_rates)
-                print('Reward\n', reward)
-                data_rates = computed_noma_rates
-                ## NOW WE KNOW THE REWARD, LET'S CALC YO
-                # first we need to obs immediately after the move.
-                new_obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
+                    clu = swap(clu=clu, users=(str(bs1_associated_user), str(bs2_associated_user)), default_settings=clusters_in_network)
+                    swapped_cluster = ([(i[0], tuple(j[0] for j in i[1])) for i in clu])
+                    if swapped_cluster not in swapped_clusters:
+                        computed_noma_rates = compute_data_rate(bs=base_stations, clusters=clu, bps=base_stations_powers)
+                        swapped_clusters.append(swapped_cluster)
+                        reward = reward_function(before_rates=data_rates, after_rates=computed_noma_rates)
+                        print('Reward\n', reward)
+                        data_rates = computed_noma_rates
+                        ## NOW WE KNOW THE REWARD, LET'S CALC YO
+                        # first we need to obs immediately after the move.
+                        new_obs = (args.base_station, bs1_player), (args.base_station_2, bs2_player)
+                        new_agent_move = (new_obs[0][0], (new_obs[0][1].x, new_obs[0][1].y), new_obs[1][0], (new_obs[1][1].x, new_obs[1][1].y))
+                        #print('New OBS', new_obs[0][0], new_obs[0][1].x, new_obs[0][1].y, new_obs[1][0], new_obs[1][1].x, new_obs[1][1].y)
+                        new_q_table_key = search_q_table(agent_move=new_agent_move, q_table=q_table)
+                        q = q_table[new_q_table_key]
+                        max_future_q = [np.max(i) for i in q]
+                        current_q = [q[0][actions[0]], q[1][actions[1]]]
+                        print('current_q', current_q)
+                        new_q = []
+                        if reward == args.base_station_reward:
+                            new_q = [args.base_station_reward/2 for _ in [args.base_station, args.base_station_2]]
+                        else:
+                            new_q = [(1 - args.learning_rate) * current_q[i] + args.learning_rate * (reward + args.discount * max_future_q[i]) for i in range(2)]
 
-                print('New OBS', new_obs[0][0], new_obs[0][1].x, new_obs[0][1].y, new_obs[1][0], new_obs[1][1].x, new_obs[1][1].y)
+                        for i in range(2):
+                            q_table[q_table_key][i][actions[i]] = new_q[i]
 
-                q = q_table[(new_obs[0][0], (new_obs[0][1].x, new_obs[0][1].y), new_obs[1][0], (new_obs[1][1].x, new_obs[1][1].y))]
-                max_future_q = [np.max(i) for i in q]
-                current_q = [q[0][actions[0]],q[1][actions[1]]]
+                        episode_reward += reward
+                        if reward == args.base_station_reward or reward == -args.base_station_penalty[1]:
+                            print('reward', reward, args.base_station_reward, 'penalty', args.base_station_penalty[1])
+                            break
 
-                new_q = []
-    #             if reward == args.base_station_reward:
-    #                 new_q = [args.base_station_reward/2 for _ in [args.base_station, args.base_station_2]]
-    #             else:
-    #                 new_q = [(1 - args.learning_rate) * current_q[i] + args.learning_rate * (reward + args.discount * max_future_q[i]) for i in range(2)]
-    #
-    #             for i in range(2):
-    #                 q_table[((obs[0][0], (obs[0][1].x, obs[0][1].y), obs[1][0], (obs[1][1].x, obs[1][1].y)))][i][actions[i]] = new_q[i]
-    #
-    #             episode_reward += reward
-    #             if reward == args.base_station_reward or reward == -args.base_station_penalty[1]:
-    #                 break
-    #
-    #     # print(episode_reward)
-    #     episode_rewards.append(episode_reward)
-    #     epsilon *= args.epsilon_decay
-    #
-    # moving_avg = np.convolve(episode_rewards, np.ones((args.show_every,)) / args.show_every, mode='valid')
-    #
-    # plt.plot([i for i in range(len(moving_avg))], moving_avg)
-    # plt.ylabel(f"Reward {args.show_every}ma")
-    # plt.xlabel("episode #")
-    # plt.show()
-    #
-    # with open(f"wireless_communication_qtable-{int(time.time())}.pickle", "wb") as f:
-    #     pickle.dump(q_table, f)
+        # print(episode_reward)
+        episode_rewards.append(episode_reward)
+        epsilon *= args.epsilon_decay
+
+    moving_avg = np.convolve(episode_rewards, np.ones((args.show_every,)) / args.show_every, mode='valid')
+
+    plt.plot([i for i in range(len(moving_avg))], moving_avg)
+    plt.ylabel(f"Reward {args.show_every}ma")
+    plt.xlabel("episode #")
+    plt.show()
+
+    with open(f"wireless_communication_qtable-{int(time.time())}.pickle", "wb") as f:
+        pickle.dump(q_table, f)
 
 if __name__=='__main__':
     par = argparse.ArgumentParser()
     par.add_argument("--noma", action="store_true", help="Used when you want to use noma-based rewarding")
     par.add_argument("--radius", action="store_true", help="Used when you want to use radius-based rewarding")
     par.add_argument("--size", default=10, type=int, help="max south, north, east and west length of environment")
-    par.add_argument("--episodes", default=2, type=int, help="default number of episodes for training")
+    par.add_argument("--episodes", default=25000, type=int, help="default number of episodes for training")
     par.add_argument("--base_station_reward", default=30, type=int, help="max reward for the agent")
-    par.add_argument("--base_station_penalty", default=[50, 120], type=list, help="ordered per base station")
+    par.add_argument("--base_station_penalty", default=[50, 150], type=list, help="ordered per base station")
     par.add_argument("--epsilon_decay", default=0.9998, type=float, help="learning rate")
     par.add_argument("--learning_rate", default=0.1, type=float, help="learning rate e.g. 0.5, 0.2, 0.1")
     par.add_argument("--discount", default=0.95, type=float)
