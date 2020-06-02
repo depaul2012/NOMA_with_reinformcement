@@ -8,8 +8,10 @@ import random
 import numpy as np
 import tensorflow as tf
 from collections import deque
+import argparse
+from tabulate import tabulate
 from PA_alg import PA_alg
-reuse = tf.AUTO_REUSE
+reuse = tf.compat.v1.AUTO_REUSE
 dtype = np.float32
 flag_fig = True
 
@@ -39,7 +41,18 @@ FINAL_EPSILON = 0.0001
 learning_rate = 0.001
 train_interval = 10
 batch_size = 256
-
+# def Generate_H_set(args):
+#     '''
+#     Jakes model
+#     '''
+#     H_set = np.zeros([args.max_users, args.adjacent_users,int(Ns)], dtype=dtype)
+#     pho = np.float32(scipy.special.k0(2*np.pi*fd*Ts))
+#     H_set[:,:,0] = np.kron(np.sqrt(0.5*(np.random.randn(args.max_users, c)**2+np.random.randn(args.max_users, c)**2)), np.ones((1,maxM), dtype=np.int32))
+#     for i in range(1,int(Ns)):
+#         H_set[:,:,i] = H_set[:,:,i-1]*pho + np.sqrt((1.-pho**2)*0.5*(np.random.randn(args.max_users, args.adjacent_users)**2+np.random.randn(args.max_users, args.adjacent_users)**2))
+#     path_loss = Generate_path_loss()
+#     H2_set = np.square(H_set) * np.tile(np.expand_dims(path_loss, axis=2), [1,1,int(Ns)])
+#     return H2_set
 c = 3*L*(L+1) + 1 # adjascent BS
 K = maxM * c # maximum adjascent users, including itself
 state_num = 3*C + 2    #  3*K - 1  3*C + 2
@@ -83,7 +96,17 @@ def building_network_parameters(users, base_station):
         dataset = pd.concat([dataset, pd.DataFrame(j, columns=[columns_of_interest[i]])], axis=1)
 
     return dataset
-    
+
+def initialize_built_network(args, bs):
+    clusters = {}
+    for i, j in enumerate(bs):
+        cluster = building_network_parameters(args.user_locations, j)
+        clusters[j] = cluster.values
+        #print('Base station', i + 1, j)
+        #print(tabulate(cluster, headers='keys', tablefmt='psql'))
+        #print(np.array(cluster))
+    return clusters
+
 def Generate_H_set():
     '''
     Jakes model
@@ -94,7 +117,9 @@ def Generate_H_set():
     for i in range(1,int(Ns)):
         H_set[:,:,i] = H_set[:,:,i-1]*pho + np.sqrt((1.-pho**2)*0.5*(np.random.randn(M, K)**2+np.random.randn(M, K)**2))
     path_loss = Generate_path_loss()
-    H2_set = np.square(H_set) * np.tile(np.expand_dims(path_loss, axis=2), [1,1,int(Ns)])   
+
+    H2_set = np.square(H_set) * np.tile(np.expand_dims(path_loss, axis=2), [1,1,int(Ns)])
+    print('Path loss --------------------------', H2_set.shape)
     return H2_set
     
 def Generate_environment():
@@ -175,6 +200,38 @@ def Generate_path_loss():
                         lognormal[k*maxM+l,i*maxM+j] = np.random.lognormal(sigma = std)                   
     path_loss = lognormal*pow(10., -(120.9 + 37.6*np.log10(dis))/10.)
     return path_loss
+
+def compute_data_rate(bs, clusters, sic=False):
+    data_rates = {}
+
+    for curr_bs,curr_cluster in clusters.items():
+        for clu in curr_cluster:
+            #print('clu', clu)
+            channel_gain, power_coeffient, distance = clu[2], clu[3], clu[1]  # numerator
+            # SINR equation numerator
+            numerator = 1 * power_coeffient * np.square(np.abs(channel_gain)) #1 signifies the use-bs indicator
+            '----------------------------------------------------------------------------------------'
+            intra_interference = intra_level_interference(users=curr_cluster, current_user=clu[0])
+
+            inter_interference = 0
+            for l in clusters:
+                if l != curr_bs:
+                    inter_interference += intra_level_interference(users=clusters[l], current_user=clu[0])
+
+            # SINR equation denominator
+            denominator = intra_interference + inter_interference + clu[4]**2
+            '----------------------------------------------------------------------------------------'
+            user_r = np.log2(1 + (numerator / denominator))
+            data_rates[(curr_bs, clu[0])] = user_r
+           # print('User {} has data rate {}'.format(user[0], user_r))
+    return data_rates
+
+def intra_level_interference(users, current_user):
+    I = 0
+    for i,u in enumerate(users):
+        if u[0] != current_user: #signal to user can't be interference
+            I += (1 * u[3] * np.square(np.abs(u[2])))
+    return I
     
 def Calculate_rate():
     maxC = 1000.
@@ -286,6 +343,7 @@ def Select_action(sess, s_t, episode):
     else:
         epsilon = 0.
     q_hat_ = sess.run(q_main, feed_dict={s: s_t}) #[M, power_num]
+    # print('q_hat', q_hat_)
     best_action = np.argmax(q_hat_, axis = 1)
     random_index = np.array(np.random.uniform(size = (M)) < epsilon, dtype = np.int32)
     random_action = np.random.randint(0, high = power_num, size = (M))
@@ -547,34 +605,68 @@ def Smooth(a, window):
     return np.concatenate((start, out0, stop))
 
 if __name__ == "__main__":
+    par = argparse.ArgumentParser()
+    par.add_argument("--base_station", default=(5, 5), type=int, help="base station location in the environment")
+    par.add_argument("--base_station_2", default=(-5, -5), type=int, help="base station location in the environment")
+    par.add_argument("--initial_k", default=3, type=bool, help="Initial max number of users per base station")
+    par.add_argument("--user_locations", default=[(1, 1), (1, 3), (3, 2), (-4, -1), (-2, -4), (-1, -2)])
+    args = par.parse_args()
+    base_stations = [args.base_station, args.base_station_2]
+    clusters_in_network = initialize_built_network(args, bs=base_stations)
+
+    j,clu = 0,{}
+    k_init = args.initial_k
+    for bs,us in clusters_in_network.items():
+        if j == 0:
+            c_ = us[:k_init, :]
+        else:
+            c_ = us[k_init:, :]
+            k_init += args.initial_k
+        j += 1
+        clu[bs] = c_
+
+    # s = tf.compat.v1.placeholder(shape=[None, state_num], dtype=dtype)
+    # a = tf.compat.v1.placeholder(shape=[None, power_num], dtype=dtype)
+    # y = tf.compat.v1.placeholder(shape=[None], dtype=dtype)
+    # q_main, a_main, r, list_main = Network(s, a, 'main')
+    # cost = Loss(y, r)
+    # train_main, add_global = Optimizer(cost, list_main)
+    # print('q_main\n', cost)
+    # print(tabulate(clusters_in_network, headers='keys', tablefmt='psql'))
     with tf.Graph().as_default():
-        H2 = tf.placeholder(shape = [None, K], dtype = dtype)
-        P = tf.placeholder(shape = [None], dtype = dtype)
-        W = tf.placeholder(shape = [None], dtype = dtype)
-        sigma2 = tf.placeholder(dtype = dtype)
+        H2 = tf.compat.v1.placeholder(shape = [None, K], dtype = dtype)
+        P = tf.compat.v1.placeholder(shape = [None], dtype = dtype)
+        W = tf.compat.v1.placeholder(shape = [None], dtype = dtype)
+        sigma2 = tf.compat.v1.placeholder(dtype = dtype)
         p_array, p_list, user_list = Generate_environment()
         rate_matrix, sinr_norm_inv, P_matrix, reward = Calculate_rate()
-    
-        s = tf.placeholder(shape = [None, state_num], dtype = dtype)
-        a = tf.placeholder(shape = [None, power_num], dtype = dtype)
-        y = tf.placeholder(shape = [None], dtype = dtype)
+        data_rates = compute_data_rate(bs=base_stations, clusters=clu)
+        # print(p_array,'\n\n', p_list, len(p_list), '\n\n', user_list, '\n\n', rate_matrix, '\n')
+        # print(reward)
+        s = tf.compat.v1.placeholder(shape = [None, state_num], dtype = dtype)
+        a = tf.compat.v1.placeholder(shape = [None, power_num], dtype = dtype)
+        y = tf.compat.v1.placeholder(shape = [None], dtype = dtype)
         q_main, a_main, r, list_main = Network(s, a, 'main')
+        for i in list_main:
+            print(i)
         cost = Loss(y, r)
+
         train_main, add_global = Optimizer(cost, list_main)
 
-        with tf.Session() as sess:        
+        with tf.Session() as sess:
             tf.global_variables_initializer().run()
             train_hist = Train(sess)
-            scipy.io.savemat(hist_file, {'train_hist':train_hist})
+            #scipy.io.savemat(hist_file, {'train_hist': train_hist})
+
 #        Plot_environment()
 #        Bar_plot()
-        pa_alg_set = PA_alg(M, K, maxP)    
-        load = Network_ini(scipy.io.loadmat(weight_file))   
-        with tf.Session() as sess:        
-            tf.global_variables_initializer().run()
-            Test_one(sess)
-#            dqn_hist, fp_hist, wmmse_hist, mp_hist, rp_hist = Test(sess)
-#            
-            
-            
+#         pa_alg_set = PA_alg(M, K, maxP)
+#         load = Network_ini(scipy.io.loadmat(weight_file))
+#         with tf.Session() as sess:
+#             tf.global_variables_initializer().run()
+#             Test_one(sess)
+# #            dqn_hist, fp_hist, wmmse_hist, mp_hist, rp_hist = Test(sess)
+# #
+#
+#
             
